@@ -24,6 +24,9 @@ namespace GaussianSplatting.Editor
         const string kPrefQuality = "nesnausk.GaussianSplatting.CreatorQuality";
         const string kPrefOutputFolder = "nesnausk.GaussianSplatting.CreatorOutputFolder";
 
+        // folder to watch file change
+        private FileSystemWatcher watcher; 
+
         enum DataQuality
         {
             VeryHigh,
@@ -39,7 +42,7 @@ namespace GaussianSplatting.Editor
         [SerializeField] string m_InputFile;
         [SerializeField] bool m_ImportCameras = true;
 
-        [SerializeField] string m_OutputFolder = "Assets/GaussianAssets";
+        [SerializeField] string m_OutputFolder = "Assets/Resources/GaussianAssets";
         [SerializeField] DataQuality m_Quality = DataQuality.Medium;
         [SerializeField] GaussianSplatAsset.VectorFormat m_FormatPos;
         [SerializeField] GaussianSplatAsset.VectorFormat m_FormatScale;
@@ -69,14 +72,64 @@ namespace GaussianSplatting.Editor
         void Awake()
         {
             m_Quality = (DataQuality)EditorPrefs.GetInt(kPrefQuality, (int)DataQuality.Medium);
-            m_OutputFolder = EditorPrefs.GetString(kPrefOutputFolder, "Assets/GaussianAssets");
+            m_OutputFolder = EditorPrefs.GetString(kPrefOutputFolder, "Assets/Resources/GaussianAssets");
         }
 
         void OnEnable()
         {
             ApplyQualityLevel();
+            InitWatcher();
         }
 
+        void InitWatcher()
+        {
+            // Setup the file system watcher
+            watcher = new FileSystemWatcher();
+            string path = Application.dataPath + "/PlyBuffer";
+            if (!Directory.Exists(path))
+            {
+                Directory.CreateDirectory(path);
+            }
+            watcher.Path = path; // Specify the folder to monitor
+            //check path exist
+            watcher.Filter = "*.ply"; // Monitor all files, adjust this as needed
+            watcher.IncludeSubdirectories = false;
+            watcher.EnableRaisingEvents = true;
+
+            // Subscribe to events
+            watcher.Created += OnChanged;
+            watcher.Changed += OnChanged;
+            // Add more event subscriptions as needed
+            Debug.Log($"Started monitoring changes in: {watcher.Path}");
+        }
+
+        private void OnDisable()
+        {
+            // Clean up
+            if (watcher != null)
+            {
+                watcher.Created -= OnChanged;
+                watcher.Changed -= OnChanged;
+                // Remove other subscriptions as necessary
+                watcher.Dispose();
+            }
+        }
+        private void OnChanged(object source, FileSystemEventArgs e)
+        {
+            // This method is called when a file is changed, created, etc.
+            EditorApplication.delayCall += () =>
+            {
+                Debug.Log($"File {e.FullPath} has been {e.ChangeType}");
+                // Perform your main-thread-safe actions here
+                if (e.ChangeType == WatcherChangeTypes.Created)
+                {
+                    // m_InputFile = e.FullPath;
+                    CreateAsset(e.FullPath);
+                    // remove the file after processing
+                    File.Delete(e.FullPath);
+                }
+            };
+        }
         void OnGUI()
         {
             EditorGUILayout.Space();
@@ -247,8 +300,12 @@ namespace GaussianSplatting.Editor
 
         unsafe void CreateAsset()
         {
+            CreateAsset(m_InputFile);
+        }
+        unsafe void CreateAsset(string inputFile)
+        {
             m_ErrorMessage = null;
-            if (string.IsNullOrWhiteSpace(m_InputFile))
+            if (string.IsNullOrWhiteSpace(inputFile))
             {
                 m_ErrorMessage = $"Select input PLY file";
                 return;
@@ -262,8 +319,8 @@ namespace GaussianSplatting.Editor
             Directory.CreateDirectory(m_OutputFolder);
 
             EditorUtility.DisplayProgressBar(kProgressTitle, "Reading data files", 0.0f);
-            GaussianSplatAsset.CameraInfo[] cameras = LoadJsonCamerasFile(m_InputFile, m_ImportCameras);
-            using NativeArray<InputSplatData> inputSplats = LoadPLYSplatFile(m_InputFile);
+            GaussianSplatAsset.CameraInfo[] cameras = LoadJsonCamerasFile(inputFile, m_ImportCameras);
+            using NativeArray<InputSplatData> inputSplats = LoadPLYSplatFile(inputFile);
             if (inputSplats.Length == 0)
             {
                 EditorUtility.ClearProgressBar();
@@ -291,7 +348,8 @@ namespace GaussianSplatting.Editor
                 ClusterSHs(inputSplats, m_FormatSH, out clusteredSHs, out splatSHIndices);
             }
 
-            string baseName = Path.GetFileNameWithoutExtension(FilePickerControl.PathToDisplayString(m_InputFile));
+            string baseName = Path.GetFileNameWithoutExtension(FilePickerControl.PathToDisplayString(inputFile));
+            baseName="output";
 
             EditorUtility.DisplayProgressBar(kProgressTitle, "Creating data objects", 0.7f);
             GaussianSplatAsset asset = ScriptableObject.CreateInstance<GaussianSplatAsset>();
@@ -362,7 +420,8 @@ namespace GaussianSplatting.Editor
                 m_ErrorMessage = ex.Message;
                 return data;
             }
-
+            Debug.Log(UnsafeUtility.SizeOf<InputSplatData>());
+            Debug.Log(vertexStride);
             if (UnsafeUtility.SizeOf<InputSplatData>() != vertexStride)
             {
                 m_ErrorMessage = $"PLY vertex size mismatch, expected {UnsafeUtility.SizeOf<InputSplatData>()} but file has {vertexStride}";
